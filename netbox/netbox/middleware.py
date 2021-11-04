@@ -2,6 +2,9 @@ import logging
 import uuid
 from urllib import parse
 
+from google.auth.transport import requests
+from google.oauth2 import id_token
+
 from django.conf import settings
 from django.contrib import auth
 from django.contrib.auth.middleware import RemoteUserMiddleware as RemoteUserMiddleware_
@@ -13,6 +16,30 @@ from extras.context_managers import change_logging
 from netbox.config import clear_config
 from netbox.views import server_error
 from utilities.api import is_api_request, rest_api_server_error
+
+
+def validate_iap_jwt(iap_jwt, expected_audience):
+    """Validate an IAP JWT.
+
+    Args:
+      iap_jwt: The contents of the X-Goog-IAP-JWT-Assertion header.
+      expected_audience: The Signed Header JWT audience. See
+          https://cloud.google.com/iap/docs/signed-headers-howto
+          for details on how to get this value.
+
+    Returns:
+      user_email
+
+    Modified from:  https://cloud.google.com/iap/docs/signed-headers-howto
+    """
+
+    try:
+        decoded_jwt = id_token.verify_token(
+            iap_jwt, requests.Request(), audience=expected_audience,
+            certs_url='https://www.gstatic.com/iap/verify/public_key')
+        return decoded_jwt['email']
+    except Exception as e:
+        raise ValueError("Unable to decode JWT token: ", format(e))
 
 
 class LoginRequiredMiddleware:
@@ -59,7 +86,7 @@ class RemoteUserMiddleware(RemoteUserMiddleware_):
                 " 'django.contrib.auth.middleware.AuthenticationMiddleware'"
                 " before the RemoteUserMiddleware class.")
         try:
-            username = request.META[self.header]
+            header_value = request.META[self.header]
         except KeyError:
             # If specified header doesn't exist then remove any existing
             # authenticated remote-user, or return (leaving request.user set to
@@ -67,6 +94,14 @@ class RemoteUserMiddleware(RemoteUserMiddleware_):
             if self.force_logout_if_no_header and request.user.is_authenticated:
                 self._remove_invalid_user(request)
             return
+
+        # If JWT IAP authentication is active, give priority over
+        # other headers auth
+        if settings.IAP_JWT_AUTH:
+            username = validate_iap_jwt(header_value, settings.IAP_JWT_AUDIENCE)
+        else:
+            username = header_value
+
         # If the user is already authenticated and that user is the user we are
         # getting passed in the headers, then the correct user is already
         # persisted in the session and we don't need to continue.
