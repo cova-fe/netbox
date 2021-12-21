@@ -130,7 +130,6 @@ class RemoteUserBackend(_RemoteUserBackend):
         user.is_staff = self._is_staff(user)
         logger.debug(f"User {user} is Staff: {user.is_staff}")
         logger.debug(f"User {user} should be Staff: {self._is_staff(user)}")
-        user.save()
         return user
 
     def authenticate(self, request, remote_user, remote_groups=None):
@@ -164,11 +163,14 @@ class RemoteUserBackend(_RemoteUserBackend):
             except UserModel.DoesNotExist:
                 pass
         if self.user_can_authenticate(user):
-            if settings.REMOTE_AUTH_GROUP_SYNC_ENABLED:
-                if user is not None and not isinstance(user, AnonymousUser):
-                    return self.configure_groups(user, remote_groups)
-            else:
-                return user
+            if user is not None and not isinstance(user, AnonymousUser):
+                if settings.REMOTE_AUTH_GROUP_SYNC_ENABLED:
+                    self.configure_groups(user, remote_groups)
+                if (settings.REMOTE_AUTH_SUPERUSERS
+                        or settings.REMOTE_AUTH_STAFF_USERS):
+                    self.configure_admin(user)
+                user.save()
+            return user
         else:
             return None
 
@@ -245,6 +247,18 @@ class RemoteUserBackend(_RemoteUserBackend):
                 f"Skipped initial assignment of permissions and groups to remotely-authenticated user {user} as Group sync is enabled")
 
         return user
+
+    def configure_admin(self, user):
+        logger = logging.getLogger('netbox.authentication.RemoteUserBackend')
+
+        user.is_superuser = self._is_superuser(user)
+        logger.debug(f"User {user} is Superuser: {user.is_superuser}")
+        logger.debug(
+            f"User {user} should be Superuser: {self._is_superuser(user)}")
+
+        user.is_staff = self._is_staff(user)
+        logger.debug(f"User {user} is Staff: {user.is_staff}")
+        logger.debug(f"User {user} should be Staff: {self._is_staff(user)}")
 
     def has_perm(self, user_obj, perm, obj=None):
         return False
